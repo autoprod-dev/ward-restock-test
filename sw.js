@@ -2,7 +2,7 @@
  * Precaches every file the app uses (app, vendored libraries, icons) so it installs and runs fully
  * offline. Page loads try the network first (so updates arrive) and fall back to the cache when
  * offline; everything else is cache-first. Only same-origin GET requests are handled. */
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const CACHE = 'ward-restock:' + new URL(self.registration.scope).pathname + ':' + VERSION;
 const FILES = ['./', './index.html', './app.css', './app.js', './calc.js', './sample.js', './manifest.webmanifest',
   './vendor/xlsx.full.min.js', './vendor/jsQR.js', './vendor/qrcode.js',

@@ -296,3 +296,6 @@ dialog .dacts .btn { flex: 1 1 120px; }
 .wnote { margin: 6px 0 0; }
 .setupname { font-weight: 700; }
 @media print { .pcode { background: none; border: 1px solid #000; } }
+.dline .q { line-height: 1.1; }
+.dline .q small, .line .q small { display: block; font-size: .72rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.dline .meta { font-size: .84rem; color: var(--muted); }

@@ -6,7 +6,7 @@
 (function () {
 const C = window.WRCalc;
 const KEY = 'wardRestock.v1';
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const $ = (sel, el) => (el || document).querySelector(sel);
 const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 const view = $('#view');
