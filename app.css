@@ -34,6 +34,8 @@ a { color: var(--primary); }
 .brand { display: flex; flex-direction: column; justify-content: center; min-height: 48px; padding: 0 6px; margin-right: auto; color: inherit; text-decoration: none; border-radius: 10px; min-width: 0; }
 .brand b { font-size: 1.12rem; white-space: nowrap; }
 .brand span { font-size: .74rem; opacity: .95; white-space: nowrap; }
+.brand .by { display: flex; align-items: center; gap: 4px; }
+.brand .ap-logo { width: 14px; height: 14px; border-radius: 50%; flex: none; }
 .brand .test { display: inline-block; font-size: .64rem; font-weight: 800; background: #ffd27a; color: #2b1a00; border-radius: 99px; padding: 1px 6px; margin-left: 4px; vertical-align: 2px; }
 .topbtn { min-width: 48px; min-height: 48px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; color: inherit; text-decoration: none; border-radius: 10px; font-size: .72rem; font-weight: 700; padding: 2px 6px; }
 .topbtn svg { width: 22px; height: 22px; }
@@ -47,7 +49,8 @@ a { color: var(--primary); }
 .banner .row { margin-top: 8px; }
 .banner .btn { flex: none; }
 
-main { padding: 6px 10px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); max-width: 760px; margin: 0 auto; }
+main { padding: 6px 10px 12px; max-width: 760px; margin: 0 auto; }
+.appfoot { max-width: 760px; margin: 0 auto; padding: 4px 10px calc(var(--nav-h) + 20px + env(safe-area-inset-bottom)); text-align: center; font-size: .7rem; color: var(--muted); }
 main:focus { outline: none; }
 .sub { color: var(--muted); margin: 0 0 12px; }
 .stepno { display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; border-radius: 50%; background: var(--primary); color: var(--primary-text); font-size: .85em; margin-right: 6px; vertical-align: 2px; }
@@ -264,7 +267,7 @@ dialog .dacts .btn { flex: 1 1 120px; }
 @media print {
   :root, [data-theme="dark"] { --bg: #fff; --surface: #fff; --surface2: #eee; --text: #000; --muted: #333; --line: #999; --primary: #000; --primary-text: #fff; --primary-soft: #fff; --ok: #000; --ok-soft: #fff; --warn: #000; --warn-soft: #fff; --danger: #000; --danger-soft: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
-  .topbar, .bottomnav, .banner, #toast, .noprint, .actionbar, .tabs, .seg, .btnrow, .btn, dialog { display: none !important; }
+  .topbar, .bottomnav, .appfoot, .banner, #toast, .noprint, .actionbar, .tabs, .seg, .btnrow, .btn, dialog { display: none !important; }
   .printonly { display: block; }
   main { padding: 0; max-width: none; }
   .card { box-shadow: none; border: 1px solid #999; break-inside: avoid; margin: 0 0 6mm; padding: 3mm; }
