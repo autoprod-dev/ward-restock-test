@@ -1,0 +1,19 @@
+{
+  "app": "Ward Restock by Autoprod",
+  "v": 1,
+  "isSample": false,
+  "sampleHistory": false,
+  "wards": [
+    { "id": "wA", "name": "Ward Alpha", "route": 1 },
+    { "id": "wB", "name": "Ward Bravo", "route": 2 },
+    { "id": "wC", "name": "Ward Charlie", "route": 3 }
+  ],
+  "fluids": [
+    { "id": "fA", "name": "Fluid A", "pack": "1000 mL", "upc": 10, "loc": "Bay B · Shelf 1", "min": 20, "stock": 25 },
+    { "id": "fB", "name": "Fluid B", "pack": "500 mL", "upc": 20, "loc": "Bay A · Shelf 1", "min": 70, "stock": 50 },
+    { "id": "fC", "name": "Fluid C", "pack": "100 mL", "upc": 50, "loc": "Bay C · Shelf 1", "min": 5, "stock": 100 }
+  ],
+  "pars": { "wA": { "fA": 10, "fB": 8, "fC": 6 }, "wB": { "fA": 12, "fB": 4, "fC": 0 }, "wC": { "fA": 2, "fB": 0, "fC": 0 } },
+  "history": [],
+  "settings": { "orderMode": "units", "theme": "light" }
+}
