@@ -6,7 +6,7 @@
 (function () {
 const C = window.WRCalc;
 const KEY = 'wardRestock.v1';
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const $ = (sel, el) => (el || document).querySelector(sel);
 const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 const view = $('#view');
@@ -28,6 +28,19 @@ function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one +
 function fluidById(id) { return S.fluids.find(f => f.id === id); }
 function wardById(id) { return S.wards.find(w => w.id === id); }
 function fl(f) { return f ? C.fluidLabel(f) : '(deleted fluid)'; }
+/* box mode: everything handed out or ordered is in whole boxes (cartons), pieces second */
+function BX() { return !!S.settings.boxes; }
+function inBoxes(f) { return BX() && C.upcKnown(f); }
+function codeTag(f) { return f && f.code ? '<span class="pcode">' + esc(f.code) + '</span> ' : ''; }
+function checkChip(f) { return C.needsCartonCheck(f) ? ' <span class="chip warn ck" title="Units per carton not confirmed">check carton</span>' : ''; }
+// big number + small caption for a quantity cell
+function qtyCell(units, f) {
+  if (!BX()) { const hint = cartonHint(units, f); return units + (hint ? '<small>' + esc(hint) + '</small>' : ''); }
+  if (!C.upcKnown(f)) return units + '<small>' + esc(C.unitWord(f, units)) + '</small>';
+  const b = C.boxesFor(units, f); const pcs = b * C.upcOf(f);
+  return b + '<small>' + (b === 1 ? 'box' : 'boxes') + ' · ' + pcs + ' ' + esc(C.unitWord(f, pcs)) + '</small>';
+}
+function totalBoxes(lines) { return lines.reduce((s, l) => s + (C.upcKnown(fluidById(l.fluidId)) ? C.boxesFor(l.qty !== undefined ? l.qty : l.need, fluidById(l.fluidId)) : 0), 0); }
 function cartonHint(units, f) {
   const per = Math.max(1, int0(f && f.upc) || 1);
   if (per <= 1 || units < per) return '';
@@ -48,10 +61,10 @@ const ICON = {
 
 /* ---------- state ---------- */
 function freshToday(date) { return { date: date || ymd(), received: [], walks: {}, drafts: {}, deliv: {}, picked: {}, receiveSkipped: false, orderDone: false }; }
-function defaultSettings() { return { orderMode: 'units', theme: 'light', labelWard: '', labelsPerPage: 8 }; }
+function defaultSettings() { return { orderMode: 'units', theme: 'light', labelWard: '', labelsPerPage: 8, boxes: true }; }
 function sampleState() {
   const b = window.WRSample.build(ymd());
-  return { v: 1, isSample: true, sampleHistory: true, wards: b.wards, fluids: b.fluids, pars: b.pars, history: b.history, today: freshToday(), settings: defaultSettings() };
+  return { v: 1, isSample: true, sampleHistory: true, setup: null, wards: b.wards, fluids: b.fluids, pars: b.pars, history: b.history, today: freshToday(), settings: defaultSettings() };
 }
 function emptyState() { return { v: 1, isSample: false, sampleHistory: false, wards: [], fluids: [], pars: {}, history: [], today: freshToday(), settings: defaultSettings() }; }
 function normalise(s) {
@@ -61,8 +74,11 @@ function normalise(s) {
   s.today = Object.assign(freshToday(), s.today || {});
   ['walks', 'drafts', 'deliv', 'picked'].forEach(k => { if (!s.today[k] || typeof s.today[k] !== 'object') s.today[k] = {}; });
   if (!Array.isArray(s.today.received)) s.today.received = [];
-  s.wards.forEach((w, i) => { w.id = w.id || uid('w'); w.name = String(w.name || 'Ward ' + (i + 1)); w.route = int0(w.route) || i + 1; });
-  s.fluids.forEach(f => { f.id = f.id || uid('f'); f.name = String(f.name || 'Fluid'); f.pack = String(f.pack || ''); f.upc = Math.max(1, int0(f.upc) || 1); f.loc = String(f.loc || ''); f.min = int0(f.min); f.stock = Math.round(Number(f.stock) || 0); });
+  s.wards.forEach((w, i) => { w.id = w.id || uid('w'); w.name = String(w.name || 'Ward ' + (i + 1)); w.route = int0(w.route) || i + 1; w.on = w.on !== false; w.note = String(w.note || ''); });
+  // upc 0 = carton size not known yet (shows 'check carton')
+  s.fluids.forEach(f => { f.id = f.id || uid('f'); f.name = String(f.name || 'Fluid'); f.pack = String(f.pack || ''); f.upc = f.upc === undefined ? 1 : int0(f.upc); f.loc = String(f.loc || ''); f.min = int0(f.min); f.stock = Math.round(Number(f.stock) || 0);
+    f.code = String(f.code || ''); f.unit = String(f.unit || 'bag'); f.upcOk = f.upcOk !== false; f.note = String(f.note || ''); });
+  s.setup = s.setup && typeof s.setup === 'object' ? s.setup : null;
   return s;
 }
 function load() {
@@ -119,6 +135,7 @@ async function confirmBox(title, body, okLabel, danger) {
 
 /* ---------- steps (the "today" state) ---------- */
 function stockedWards() { return C.wardsInRoute(S.wards).filter(w => C.wardFluids(S, w.id).length); }
+function onWards() { return C.wardsInRoute(S.wards).filter(w => w.on !== false); }
 function steps() {
   const t = S.today;
   const pl = C.pickList(S);
@@ -153,7 +170,7 @@ function applyTheme() {
 function chrome() {
   applyTheme();
   const b = [];
-  if (S.isSample) b.push('<div class="banner sample row nowrap" role="note"><span class="grow"><strong>SAMPLE DATA</strong> (made up). To use yours: <b>Setup → Import / export</b> → Excel template.</span><a class="btn sm" href="#setup/io">Replace</a></div>');
+  if (S.isSample) b.push('<div class="banner sample row nowrap" role="note"><span class="grow"><strong>SAMPLE DATA</strong> (made up). To use yours: <b>Setup → Import / export</b> → Load setup or Excel.</span><a class="btn sm" href="#setup/io">Replace</a></div>');
   if (S.today.date !== ymd()) b.push('<div class="banner day" role="note">Still on the round from <b>' + esc(fmtDate(S.today.date)) + '</b>. <div class="row"><button class="btn sm primary" type="button" data-act="newday">Start new day</button></div></div>');
   $('#banners').innerHTML = b.join('');
   const stp = steps();
@@ -190,7 +207,7 @@ function render(opts) {
 const TITLES = { receive: 'Receiving', walk: 'Ward walk', pick: 'Pick list', deliver: 'Delivery', order: 'Ordering', history: 'History', setup: 'Setup' };
 const AFTER = {};
 function go(hash) { if (location.hash === hash) render(); else location.hash = hash; }
-window.addEventListener('hashchange', () => render({ focus: true }));
+window.addEventListener('hashchange', () => { if (/^#setup=/.test(location.hash)) { openSetupLink(); return; } render({ focus: true }); });
 
 /* ---------- stepper helper ---------- */
 function stepper(id, value, label, opts) {
@@ -232,12 +249,12 @@ VIEWS.today = () => {
   const shorts = Object.values(C.shortagesByFluid(S)).reduce((s, x) => s + x.qty, 0);
   const pl = C.pickList(S);
   const href = { receive: '#receive', walk: '#walk', pick: '#pick', deliver: '#deliver', order: '#order' };
-  return '<h1>Today</h1><p class="sub">' + esc(fmtDate(S.today.date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) + '</p>' +
+  return '<h1>Today</h1><p class="sub">' + esc(fmtDate(S.today.date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })) + (S.setup ? ' · <span class="setupname">' + esc(S.setup.name) + '</span>' : '') + '</p>' +
     '<ol class="steps" aria-label="Today\'s steps">' + stp.map((s, i) =>
       '<li class="' + s.status + (s.current ? ' current' : '') + '"><a href="' + href[s.key] + '"><span class="num" aria-hidden="true">' + (s.status === 'done' ? '✓' : i + 1) + '</span><span><span class="lbl">' + esc(s.label) + '</span><br><span class="det">' + esc(s.detail) + '</span></span>' +
       '<span class="chip ' + (s.status === 'done' ? 'ok' : s.current ? 'info' : s.status === 'part' ? 'warn' : '') + '">' + (s.status === 'done' ? 'Done' : s.current ? 'Next' : s.status === 'part' ? 'Started' : 'To do') + '</span></a></li>').join('') + '</ol>' +
     '<div class="stats">' +
-      '<div class="stat"><span class="muted small">To top up today</span><b>' + pl.total + '</b></div>' +
+      '<div class="stat"><span class="muted small">To top up today' + (BX() ? ' (boxes)' : '') + '</span><b>' + (BX() ? totalBoxes(pl.combined) : pl.total) + '</b></div>' +
       '<div class="stat"><span class="muted small">Fluids to order</span><b>' + orders.length + '</b></div>' +
       '<div class="stat"><span class="muted small">Below store min</span><b>' + below + '</b></div>' +
       '<div class="stat"><span class="muted small">Shortages today</span><b>' + shorts + '</b></div>' +
@@ -274,13 +291,13 @@ VIEWS.receive = () => {
   return '<h1><span class="stepno">1</span>Receiving</h1><p class="sub">Log each pallet line in to add it to store stock.</p>' +
     '<div class="card">' +
       '<label class="field"><span>Fluid</span><select id="rcvFluid">' + fluids.map(x => '<option value="' + esc(x.id) + '"' + (x.id === f.id ? ' selected' : '') + '>' + esc(fl(x)) + '</option>').join('') + '</select></label>' +
-      '<p class="muted small" id="rcvStock">In store now: <b>' + f.stock + '</b> · ' + esc(f.loc || 'no location') + ' · ' + f.upc + ' per carton</p>' +
+      '<p class="muted small" id="rcvStock">' + codeTag(f) + 'In store now: <b>' + f.stock + '</b> · ' + esc(f.loc || 'no location') + ' · ' + (C.upcKnown(f) ? f.upc + ' per carton' : 'carton size not set') + checkChip(f) + '</p>' +
       '<div class="seg" role="group" aria-label="Count by"><button type="button" data-rmode="cartons" aria-pressed="' + (recvState.mode === 'cartons') + '">Cartons × per carton</button><button type="button" data-rmode="units" aria-pressed="' + (recvState.mode === 'units') + '">Units</button></div>' +
       (recvState.mode === 'units'
         ? '<label class="field" for="rcvQty"><span>Quantity (units)</span></label>' + stepper('rcvQty', recvState.qty, 'Quantity in units', { placeholder: '0' })
         : '<label class="field" for="rcvCartons"><span>Cartons</span></label>' + stepper('rcvCartons', recvState.cartons, 'Number of cartons', { placeholder: '0' }) +
           '<label class="field"><span>Units per carton</span><input type="text" inputmode="numeric" id="rcvUpc" value="' + esc(upc) + '"></label>') +
-      '<p class="big" id="rcvTotal" aria-live="polite" style="font-size:1.15rem;font-weight:800;margin-top:10px">Adds ' + units + ' units → store ' + (f.stock + units) + '</p>' +
+      '<p class="big" id="rcvTotal" aria-live="polite" style="font-size:1.15rem;font-weight:800;margin-top:10px">' + esc(rcvText(f, units)) + '</p>' +
       '<button class="btn primary big block" type="button" data-act="receive"' + (units > 0 ? '' : ' disabled') + '>Add to store stock</button>' +
     '</div>' +
     '<h2>Received today (' + list.length + ')</h2>' +
@@ -292,11 +309,15 @@ VIEWS.receive = () => {
     (S.today.received.length || S.today.receiveSkipped ? '' : '<div class="btnrow"><button class="btn" type="button" data-act="skipreceive">No delivery today · skip</button></div>') +
     (S.today.received.length || S.today.receiveSkipped ? '<div class="btnrow"><a class="btn big" href="#walk">Done receiving · Ward walk →</a></div>' : '');
 };
+function rcvText(f, units) {
+  if (BX() && recvState.mode === 'cartons') return 'Adds ' + units + ' ' + C.unitWord(f, units) + ' (' + plural(int0(recvState.cartons), 'box', 'boxes') + ') → store ' + (f.stock + units);
+  return 'Adds ' + units + ' units → store ' + (f.stock + units);
+}
 function updateReceiveTotal() {
   const f = fluidById(recvState.fluidId); if (!f) return;
   const upc = recvState.upc === null ? f.upc : recvState.upc;
   const units = C.receivedUnits({ mode: recvState.mode, qty: recvState.qty, cartons: recvState.cartons, upc });
-  $('#rcvTotal').textContent = 'Adds ' + units + ' units → store ' + (f.stock + units);
+  $('#rcvTotal').textContent = rcvText(f, units);
   $('[data-act="receive"]').disabled = !(units > 0);
 }
 view.addEventListener('wr-change', e => {
@@ -326,14 +347,14 @@ function doReceive() {
 /* ================= 2. WARD WALK ================= */
 VIEWS.walk = (r) => {
   if (r.arg && wardById(r.arg)) return walkWard(wardById(r.arg));
-  const wards = C.wardsInRoute(S.wards);
+  const wards = onWards();
   if (!wards.length) return '<h1><span class="stepno">2</span>Ward walk</h1><div class="card empty">No wards yet. Add them in <a href="#setup/wards">Setup → Wards</a>.</div>';
   const walked = wards.filter(w => S.today.walks[w.id]).length;
   return '<h1><span class="stepno">2</span>Ward walk</h1><p class="sub">Pick a ward, count what is on the shelf. Top-ups work themselves out. ' + walked + ' of ' + stockedWards().length + ' walked.</p>' +
     wards.map(w => {
       const n = C.wardFluids(S, w.id).length;
       const wk = S.today.walks[w.id];
-      const tot = wk ? Object.values(wk.topups).reduce((s, x) => s + int0(x), 0) : 0;
+      const tot = wk ? (BX() ? totalBoxes(Object.keys(wk.topups).map(fid => ({ fluidId: fid, qty: int0(wk.topups[fid]) })).filter(l => fluidById(l.fluidId))) + ' boxes' : Object.values(wk.topups).reduce((s, x) => s + int0(x), 0)) : 0;
       const draft = S.today.drafts[w.id] ? Object.keys(S.today.drafts[w.id]).length : 0;
       return '<a class="wardbtn' + (wk ? ' walked' : '') + '" href="#walk/' + esc(w.id) + '"><span class="grow"><span class="nm">' + esc(w.name) + '</span><br><span class="muted small">' +
         (n ? plural(n, 'fluid line') : 'No pars set') + (wk ? ' · walked ' + esc(fmtTime(wk.t)) : draft ? ' · ' + draft + ' counted so far' : '') + '</span></span>' +
@@ -353,17 +374,18 @@ function walkWard(w) {
   const counted = fluids.filter(f => counts[f.id] !== undefined && counts[f.id] !== null).length;
   return '<div class="walkhead"><a class="btn sm ghost" href="#walk" aria-label="Back to all wards">←</a><div class="grow"><h1>' + esc(w.name) + '</h1><span class="muted small">' + (wk ? 'Saved ' + esc(fmtTime(wk.t)) : 'Not saved yet') + ' · <span id="walkCounted">' + counted + ' of ' + fluids.length + '</span> counted</span></div>' +
     (fluids.length ? '<button class="btn sm" type="button" data-act="scan" aria-label="Scan a shelf label">' + ICON.cam + 'Scan</button>' : '') + '</div>' +
-    '<p class="sub small">Count what is on the shelf. <b>Full</b> = at par.</p>' +
+    '<p class="sub small">' + (BX() ? 'Count the <b>boxes</b> on the shelf (count a part box if it is at least half full). <b>Full</b> = at par.' : 'Count what is on the shelf. <b>Full</b> = at par.') + '</p>' +
     (fluids.length ? '' : '<div class="card empty">No pars set for this ward. Set them in <a href="#setup/pars">Setup → Pars</a>.</div>') +
     fluids.map(f => {
-      const par = C.parOf(S.pars, w.id, f.id);
+      const par = C.effPar(S, w.id, f);
       const c = counts[f.id];
       const tu = C.topUp(par, c);
+      const bx = inBoxes(f);
       return '<section class="fcard' + (tu !== null ? ' counted' : '') + '" id="fc-' + esc(f.id) + '" data-fid="' + esc(f.id) + '" aria-label="' + esc(fl(f)) + '">' +
-        '<div class="fhead"><div><div class="fname">' + esc(f.name) + '</div><div class="fmeta">' + esc(f.pack) + ' · <b>Par ' + par + '</b> · ' + esc(f.loc) + '</div></div>' +
-        '<div class="topup ' + (tu === null ? '' : tu > 0 ? 'need' : 'zero') + '" aria-live="polite"><span class="tl">Top up</span><span class="tv" data-topup>' + (tu === null ? '–' : tu) + '</span></div></div>' +
-        '<div class="frow"><div><div class="lbl">On shelf</div>' + stepper('cnt-' + f.id, c, 'On shelf, ' + fl(f), { max: 999 }) + '</div>' +
-        '<button class="btn full" type="button" data-act="full" data-fid="' + esc(f.id) + '" aria-label="' + esc(fl(f)) + ' is full (' + par + ')">Full</button></div></section>';
+        '<div class="fhead"><div><div class="fname">' + esc(f.name) + '</div><div class="fmeta">' + esc(f.pack) + ' · <b>Par ' + (bx ? esc(C.boxText(par, f)) : par) + '</b> · ' + codeTag(f) + esc(f.loc) + '</div></div>' +
+        '<div class="topup ' + (tu === null ? '' : tu > 0 ? 'need' : 'zero') + '" aria-live="polite"><span class="tl">Top up' + (bx ? ' boxes' : '') + '</span><span class="tv" data-topup>' + (tu === null ? '–' : bx ? tu / C.upcOf(f) : tu) + '</span></div></div>' +
+        '<div class="frow"><div><div class="lbl">' + (bx ? 'Boxes on shelf' : 'On shelf') + '</div>' + stepper('cnt-' + f.id, c === undefined || c === null ? c : bx ? Math.ceil(c / C.upcOf(f)) : c, (bx ? 'Boxes on shelf, ' : 'On shelf, ') + fl(f), { max: 999 }) + '</div>' +
+        '<button class="btn full" type="button" data-act="full" data-fid="' + esc(f.id) + '" aria-label="' + esc(fl(f)) + ' is full (' + (bx ? esc(C.boxText(par, f)) : par) + ')">Full</button></div></section>';
     }).join('') +
     (fluids.length ? '<div class="actionbar"><button class="btn primary big block" type="button" data-act="savewalk" data-ward="' + esc(w.id) + '"' + (counted < fluids.length ? ' aria-disabled="true"' : '') + '>' + walkSaveLabel(w.id) + '</button></div>' : '');
 }
@@ -371,6 +393,7 @@ function walkSaveLabel(wardId) {
   const fluids = C.wardFluids(S, wardId); const counts = walkCounts(wardId);
   const left = fluids.filter(f => counts[f.id] === undefined || counts[f.id] === null).length;
   if (left) return 'Count ' + left + ' more to save';
+  if (BX()) return 'Save walk · ' + plural(fluids.reduce((s, f) => s + C.boxesFor(C.topUp(C.effPar(S, wardId, f), counts[f.id]), f), 0), 'box', 'boxes') + ' to top up';
   const tot = fluids.reduce((s, f) => s + C.topUp(C.parOf(S.pars, wardId, f.id), counts[f.id]), 0);
   return 'Save walk · ' + tot + ' to top up';
 }
@@ -380,10 +403,11 @@ function setCount(wardId, fid, value, inputEl) {
   save();
   const card = $('#fc-' + CSS.escape(fid));
   if (card) {
-    const par = C.parOf(S.pars, wardId, fid);
+    const f = fluidById(fid); const bx = inBoxes(f); const per = C.upcOf(f);
+    const par = C.effPar(S, wardId, f);
     const tu = C.topUp(par, value);
-    if (inputEl !== $('input', card)) $('input', card).value = value === null ? '' : value;
-    $('[data-topup]', card).textContent = tu === null ? '–' : tu;
+    if (inputEl !== $('input', card)) $('input', card).value = value === null ? '' : bx ? Math.ceil(value / per) : value;
+    $('[data-topup]', card).textContent = tu === null ? '–' : bx ? tu / per : tu;
     const box = $('.topup', card); box.className = 'topup ' + (tu === null ? '' : tu > 0 ? 'need' : 'zero');
     card.classList.toggle('counted', tu !== null);
   }
@@ -395,7 +419,8 @@ function setCount(wardId, fid, value, inputEl) {
 view.addEventListener('wr-change', e => {
   if (routeName !== 'walk') return;
   const card = e.target.closest('.fcard'); if (!card) return;
-  setCount(parseHash().arg, card.dataset.fid, readStepper(e.target), e.target);
+  const v = readStepper(e.target); const f = fluidById(card.dataset.fid);
+  setCount(parseHash().arg, card.dataset.fid, v !== null && inBoxes(f) ? v * C.upcOf(f) : v, e.target);
 });
 function saveWalk(wardId) {
   const w = wardById(wardId); const fluids = C.wardFluids(S, wardId); const counts = walkCounts(wardId);
@@ -407,7 +432,7 @@ function saveWalk(wardId) {
     return;
   }
   const topups = {}; const cnt = {};
-  fluids.forEach(f => { cnt[f.id] = counts[f.id]; topups[f.id] = C.topUp(C.parOf(S.pars, wardId, f.id), counts[f.id]); });
+  fluids.forEach(f => { cnt[f.id] = counts[f.id]; topups[f.id] = C.topUp(C.effPar(S, wardId, f), counts[f.id]); });
   // a re-walk replaces the old one: undo any shelving already ticked for this ward
   let cleared = false;
   const dv = S.today.deliv[wardId] || {};
@@ -416,7 +441,7 @@ function saveWalk(wardId) {
   S.today.walks[wardId] = { t: new Date().toISOString(), counts: cnt, topups };
   delete S.today.drafts[wardId];
   save();
-  const tot = Object.values(topups).reduce((s, x) => s + x, 0);
+  const tot = BX() ? plural(totalBoxes(Object.keys(topups).map(fid => ({ fluidId: fid, qty: topups[fid] }))), 'box', 'boxes') : Object.values(topups).reduce((s, x) => s + x, 0);
   toast(w.name + ' saved: ' + tot + ' to top up.' + (cleared ? ' Its delivery ticks were reset.' : ''));
   go('#walk');
 }
@@ -429,26 +454,26 @@ VIEWS.pick = () => {
   if (!pl.perWard.length) return head + '<div class="card empty">Walk a ward first, then its top-ups show here.<div class="btnrow"><a class="btn primary" href="#walk">Go to ward walk</a></div></div>';
   const t = S.today;
   const pickedN = pl.combined.filter(l => t.picked['c:' + l.fluidId]).length;
-  return head + '<p class="sub">' + plural(pl.perWard.length, 'walked ward') + ' · <b>' + pl.total + '</b> units · ' + pickedN + ' of ' + pl.combined.length + ' picked. Sorted by store location.</p>' +
+  return head + '<p class="sub">' + plural(pl.perWard.length, 'walked ward') + ' · <b>' + (BX() ? plural(totalBoxes(pl.combined), 'box', 'boxes') : pl.total + '</b> units') + (BX() ? '</b>' : '') + ' · ' + pickedN + ' of ' + pl.combined.length + ' picked. Sorted by store location.</p>' +
     '<p class="printonly">Ward Restock by Autoprod · ' + esc(fmtDate(t.date)) + ' · printed ' + esc(fmtTime(new Date().toISOString())) + '</p>' +
     '<div class="btnrow noprint tight3"><a class="btn sm" href="#pick-combined" data-jump="pick-combined">Combined</a><a class="btn sm" href="#pick-wards" data-jump="pick-wards">By ward</a><button class="btn sm" type="button" data-act="print">' + ICON.print + 'Print</button></div>' +
     '<h2 id="pick-combined">Combined totals</h2>' +
     (pl.combined.length ? '<ul class="list card tight">' + pl.combined.map(l => {
       const f = fluidById(l.fluidId); const k = 'c:' + l.fluidId; const done = !!t.picked[k];
-      const hint = cartonHint(l.qty, f);
-      return '<li class="line' + (done ? ' done' : '') + '"><label class="tick"><input type="checkbox" data-pick="' + esc(k) + '"' + (done ? ' checked' : '') + ' aria-label="Picked ' + esc(fl(f)) + ', ' + l.qty + '"></label>' +
-        '<span><span class="nm">' + esc(fl(f)) + '</span><br><span class="meta"><b>' + esc(l.loc || 'No location') + '</b> · ' + l.wards.map(x => esc(wardShort(wardById(x.wardId))) + ' ' + x.qty).join(' · ') + '</span></span>' +
-        '<span class="q">' + l.qty + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</span></li>';
+      const wq = q => BX() && C.upcKnown(f) ? C.boxesFor(q, f) : q;
+      return '<li class="line' + (done ? ' done' : '') + '"><label class="tick"><input type="checkbox" data-pick="' + esc(k) + '"' + (done ? ' checked' : '') + ' aria-label="Picked ' + esc(fl(f)) + ', ' + (BX() ? C.boxText(l.qty, f) : l.qty) + '"></label>' +
+        '<span><span class="nm">' + esc(fl(f)) + checkChip(f) + '</span><br><span class="meta">' + codeTag(f) + '<b>' + esc(l.loc || 'No location') + '</b> · ' + l.wards.map(x => esc(wardShort(wardById(x.wardId))) + ' ' + wq(x.qty)).join(' · ') + '</span></span>' +
+        '<span class="q">' + qtyCell(l.qty, f) + '</span></li>';
     }).join('') + '</ul>' : '<div class="card empty">Every walked shelf was full. Nothing to pick.</div>') +
     '<h2 id="pick-wards">By ward (for loading the trolley)</h2>' +
     pl.perWard.map(pw => {
       const w = wardById(pw.wardId);
-      const tot = pw.lines.reduce((s, l) => s + l.qty, 0);
-      return '<section class="card tight"><div class="row"><h3 class="grow">' + esc(w.name) + '</h3><span class="chip">' + tot + ' units</span></div>' +
+      const tot = BX() ? plural(totalBoxes(pw.lines), 'box', 'boxes') : pw.lines.reduce((s, l) => s + l.qty, 0) + ' units';
+      return '<section class="card tight"><div class="row"><h3 class="grow">' + esc(w.name) + '</h3><span class="chip">' + tot + '</span></div>' +
         (pw.lines.length ? '<ul class="list">' + pw.lines.map(l => {
           const f = fluidById(l.fluidId); const k = 'w:' + pw.wardId + ':' + l.fluidId; const done = !!t.picked[k];
-          return '<li class="line' + (done ? ' done' : '') + '"><label class="tick"><input type="checkbox" data-pick="' + esc(k) + '"' + (done ? ' checked' : '') + ' aria-label="Loaded for ' + esc(w.name) + ': ' + esc(fl(f)) + ', ' + l.qty + '"></label>' +
-            '<span><span class="nm">' + esc(fl(f)) + '</span><br><span class="meta">' + esc(l.loc) + '</span></span><span class="q">' + l.qty + '</span></li>';
+          return '<li class="line' + (done ? ' done' : '') + '"><label class="tick"><input type="checkbox" data-pick="' + esc(k) + '"' + (done ? ' checked' : '') + ' aria-label="Loaded for ' + esc(w.name) + ': ' + esc(fl(f)) + ', ' + (BX() ? C.boxText(l.qty, f) : l.qty) + '"></label>' +
+            '<span><span class="nm">' + esc(fl(f)) + '</span><br><span class="meta">' + codeTag(f) + esc(l.loc) + '</span></span><span class="q">' + (BX() ? qtyCell(l.qty, f) : l.qty) + '</span></li>';
         }).join('') + '</ul>' : '<p class="muted">All full · nothing for this ward.</p>') + '</section>';
     }).join('') +
     '<div class="actionbar"><a class="btn primary big block" href="#deliver">Next: Delivery →</a></div>';
@@ -496,8 +521,8 @@ VIEWS.deliver = () => {
         (pw.empty ? '<p class="muted">Shelves were full. Nothing to drop off.</p>' : pw.lines.map(l => {
           const f = fluidById(l.fluidId);
           return '<div class="dline' + (l.done ? ' done' : '') + '" data-fid="' + esc(l.fluidId) + '"><label class="tick"><input type="checkbox" data-shelve="' + esc(w.id) + '|' + esc(l.fluidId) + '"' + (l.done ? ' checked' : '') + ' aria-label="Shelved ' + esc(fl(f)) + ' on ' + esc(w.name) + '"></label>' +
-            '<span class="nmcol"><span class="nm">' + esc(fl(f)) + '</span>' + (l.short ? '<br><span class="chip warn">Short ' + l.short + ' · delivered ' + l.delivered + '</span>' : '') + '</span>' +
-            '<span class="qcol"><span class="q">' + l.need + '</span><button class="btn sm shortbtn' + (l.short ? ' danger' : '') + '" type="button" data-short="' + esc(w.id) + '|' + esc(l.fluidId) + '" aria-label="' + (l.short ? 'Edit shortage' : 'Short: flag a shortage') + ', ' + esc(fl(f)) + ' on ' + esc(w.name) + '">' + (l.short ? 'Edit' : 'Short') + '</button></span></div>';
+            '<span class="nmcol"><span class="nm">' + esc(fl(f)) + '</span><br><span class="meta">' + codeTag(f) + '</span>' + (l.short ? '<br><span class="chip warn">Short ' + (inBoxes(f) ? plural(l.short / C.upcOf(f), 'box', 'boxes') : l.short) + ' · delivered ' + (inBoxes(f) ? l.delivered / C.upcOf(f) : l.delivered) + '</span>' : '') + '</span>' +
+            '<span class="qcol"><span class="q">' + (BX() ? qtyCell(l.need, f) : l.need) + '</span><button class="btn sm shortbtn' + (l.short ? ' danger' : '') + '" type="button" data-short="' + esc(w.id) + '|' + esc(l.fluidId) + '" aria-label="' + (l.short ? 'Edit shortage' : 'Short: flag a shortage') + ', ' + esc(fl(f)) + ' on ' + esc(w.name) + '">' + (l.short ? 'Edit' : 'Short') + '</button></span></div>';
         }).join('')) + '</section>';
     }).join('') +
     '<div class="actionbar"><a class="btn primary big block" href="#order">' + (done === lines.length ? 'Next: Ordering →' : 'Ordering (' + (lines.length - done) + ' lines left)') + '</a></div>';
@@ -523,23 +548,24 @@ view.addEventListener('change', e => {
 });
 async function flagShort(wid, fid) {
   const w = wardById(wid); const f = fluidById(fid);
-  const need = int0(S.today.walks[wid].topups[fid]);
+  const per = inBoxes(f) ? C.upcOf(f) : 1; const unitLbl = per > 1 ? ' boxes' : '';
+  const need = int0(S.today.walks[wid].topups[fid]) / per;
   const cur = ((S.today.deliv[wid] || {})[fid]) || {};
-  const start = cur.short || 1;
+  const start = cur.short ? cur.short / per : 1;
   const r = await modal({
     title: 'Short on ' + w.name,
-    html: '<p><b>' + esc(fl(f)) + '</b><br>Needed ' + need + '. How many could you <b>not</b> deliver?</p>' + stepper('shortQty', start, 'Units short', { min: 0, max: need }) +
-      '<p id="shortNote" class="muted" aria-live="polite" style="margin-top:10px">Delivered ' + (need - start) + ' of ' + need + '. The shortage goes on tomorrow\'s order.</p>',
+    html: '<p><b>' + esc(fl(f)) + '</b><br>Needed ' + need + unitLbl + '. How many' + unitLbl + ' could you <b>not</b> deliver?</p>' + stepper('shortQty', start, per > 1 ? 'Boxes short' : 'Units short', { min: 0, max: need }) +
+      '<p id="shortNote" class="muted" aria-live="polite" style="margin-top:10px">Delivered ' + (need - start) + ' of ' + need + unitLbl + '. The shortage goes on tomorrow\'s order.</p>',
     buttons: (cur.short ? [{ label: 'Clear shortage', value: 'clear', cls: 'danger' }] : []).concat([{ label: 'Cancel', value: '' }, { label: 'Save shortage', value: 'ok', cls: 'primary' }]),
     focus: '#shortQty',
-    onOpen: d => { d.addEventListener('wr-change', () => { const n = Math.min(need, readStepper($('#shortQty', d)) || 0); $('#shortNote', d).textContent = 'Delivered ' + (need - n) + ' of ' + need + '. The shortage goes on tomorrow\'s order.'; }); },
+    onOpen: d => { d.addEventListener('wr-change', () => { const n = Math.min(need, readStepper($('#shortQty', d)) || 0); $('#shortNote', d).textContent = 'Delivered ' + (need - n) + ' of ' + need + unitLbl + '. The shortage goes on tomorrow\'s order.'; }); },
   });
   if (!r) return;
   if (r.value === 'clear') { setDelivery(wid, fid, !!cur.done, 0); save(); render({ keepScroll: true }); toast('Shortage cleared.'); return; }
   const n = Math.min(need, readStepper($('#shortQty', r.form)) || 0);
-  setDelivery(wid, fid, true, n);
+  setDelivery(wid, fid, true, n * per);
   save(); render({ keepScroll: true });
-  toast(n ? 'Short ' + n + ' × ' + fl(f) + ' flagged. It is on tomorrow\'s order.' : 'Delivered in full.');
+  toast(n ? 'Short ' + n + unitLbl + ' × ' + fl(f) + ' flagged. It is on tomorrow\'s order.' : 'Delivered in full.');
 }
 // Route order: walked wards are reordered among their own slots in the full route.
 function applyRouteOrder(walkedIdsInNewOrder) {
@@ -599,19 +625,20 @@ document.addEventListener('pointercancel', endDrag);
 /* ================= 5. ORDERING ================= */
 VIEWS.order = () => {
   const rows = C.orderList(S);
-  const mode = S.settings.orderMode;
+  const mode = BX() ? 'boxes' : S.settings.orderMode;
   const pend = C.pendingByFluid(S);
   const pendingTotal = Object.values(pend).reduce((s, x) => s + x, 0);
   return '<h1><span class="stepno">5</span>Tomorrow\'s order</h1>' +
     '<p class="sub">Projected store stock = store stock − deliveries still to go out' + (pendingTotal ? ' (<b>' + pendingTotal + '</b> units not shelved yet)' : '') + '. Anything under the store minimum or tomorrow\'s usual use is ordered, plus shortages.</p>' +
     '<p class="printonly">Ward Restock by Autoprod · ' + esc(fmtDate(ymd())) + '</p>' +
-    '<div class="seg" role="group" aria-label="Order in"><button type="button" data-omode="units" aria-pressed="' + (mode === 'units') + '">Units</button><button type="button" data-omode="cartons" aria-pressed="' + (mode === 'cartons') + '">Cartons</button></div>' +
+    (BX() ? '<p class="small muted">Ordered in whole boxes (rounded up). Switch in Setup → Data.</p>' : '<div class="seg" role="group" aria-label="Order in"><button type="button" data-omode="units" aria-pressed="' + (mode === 'units') + '">Units</button><button type="button" data-omode="cartons" aria-pressed="' + (mode === 'cartons') + '">Cartons</button></div>') +
     (rows.length ? '<ul class="list" id="orderList">' + rows.map(r => {
       const f = fluidById(r.fluidId);
-      const q = mode === 'cartons'
+      const q = mode === 'boxes' ? (C.upcKnown(f) ? r.cartons + ' <span class="u">' + (r.cartons === 1 ? 'box' : 'boxes') + '</span> <small>= ' + r.cartonUnits + ' ' + esc(C.unitWord(f, r.cartonUnits)) + ' (' + r.upc + '/box)</small>' : r.units + ' <span class="u">' + esc(C.unitWord(f, r.units)) + '</span>')
+        : mode === 'cartons'
         ? r.cartons + ' <span class="u">' + (r.cartons === 1 ? 'carton' : 'cartons') + '</span> <small>= ' + r.cartonUnits + ' units (' + r.upc + '/ctn)</small>'
         : r.units + ' <span class="u">' + (r.units === 1 ? 'unit' : 'units') + '</span>';
-      return '<li class="card orow" data-fid="' + esc(r.fluidId) + '"><div class="row nowrap" style="align-items:flex-start"><div class="grow"><div class="fname">' + esc(fl(f)) + '</div>' +
+      return '<li class="card orow" data-fid="' + esc(r.fluidId) + '"><div class="row nowrap" style="align-items:flex-start"><div class="grow"><div class="fname">' + esc(fl(f)) + checkChip(f) + '</div>' + (f.code ? '<div class="fmeta">' + codeTag(f) + '</div>' : '') +
         '<div class="fmeta">Store ' + r.stock + (r.pending ? ' − ' + r.pending + ' to deliver' : '') + ' → <b>' + r.projected + '</b> · min ' + r.min + (r.forecast ? ' · uses ~' + Math.ceil(r.forecast) + '/day' : '') + '</div></div>' +
         '<div class="q" data-qty>' + q + '</div></div><div class="wrapchips">' + r.reasons.map(x => '<span class="chip ' + (x.code === 'short' ? 'danger' : x.code === 'min' ? 'warn' : 'info') + '">' + esc(x.code === 'short' ? 'Shortage ' + x.wards.map(sw => (wardById(sw.wardId) || {}).name + ' ' + sw.qty).join(', ') : x.code === 'min' ? 'Below min' : 'Needed tomorrow') + '</span>').join('') + '</div></li>';
     }).join('') + '</ul>' : '<div class="card empty">Nothing to order: every fluid is above its store minimum and there are no shortages.</div>') +
@@ -627,7 +654,7 @@ VIEWS.order = () => {
 function orderTextNow() {
   const byId = {}; S.fluids.forEach(f => { byId[f.id] = f; });
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-  return C.orderText(C.orderList(S), byId, S.settings.orderMode, 'for ' + fmtDate(ymd(tomorrow)));
+  return C.orderText(C.orderList(S), byId, BX() ? 'boxes' : S.settings.orderMode, 'for ' + fmtDate(ymd(tomorrow)));
 }
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; }
@@ -703,30 +730,41 @@ VIEWS.setup = (r) => {
 const SETUP = {};
 SETUP.wards = () => {
   const wards = C.wardsInRoute(S.wards);
-  return '<p class="sub">Name each ward and set the delivery route order (top = first stop).</p>' +
+  const offN = wards.filter(w => w.on === false).length;
+  return '<p class="sub">Name each ward and set the delivery route order (top = first stop). Untick <b>On round</b> for wards you do not stock.' + (offN ? ' ' + offN + ' of ' + wards.length + ' are off.' : '') + '</p>' +
     '<ol class="list">' + wards.map((w, i) => '<li class="card tight"><div class="row nowrap"><span class="chip" aria-label="Route stop ' + (i + 1) + '">' + (i + 1) + '</span>' +
       '<input type="text" class="grow" data-wardname="' + esc(w.id) + '" value="' + esc(w.name) + '" aria-label="Ward name, stop ' + (i + 1) + '">' +
       '</div><div class="row" style="margin-top:6px"><button class="btn sm" type="button" data-wmove="-1" data-ward="' + esc(w.id) + '" aria-label="Move ' + esc(w.name) + ' earlier"' + (i === 0 ? ' disabled' : '') + '>' + ICON.up + '</button>' +
       '<button class="btn sm" type="button" data-wmove="1" data-ward="' + esc(w.id) + '" aria-label="Move ' + esc(w.name) + ' later"' + (i === wards.length - 1 ? ' disabled' : '') + '>' + ICON.down + '</button>' +
-      '<span class="muted small grow">' + plural(C.wardFluids(S, w.id).length, 'fluid') + ' with a par</span>' +
-      '<button class="btn sm danger" type="button" data-delward="' + esc(w.id) + '" aria-label="Delete ' + esc(w.name) + '">' + ICON.trash + 'Delete</button></div></li>').join('') + '</ol>' +
+      '<label class="check onoff"><input type="checkbox" data-wardon="' + esc(w.id) + '"' + (w.on !== false ? ' checked' : '') + '><span>On round</span></label>' +
+      '<span class="muted small grow">' + (w.on === false ? 'Off: not walked' : plural(C.wardFluids(S, w.id).length, 'fluid') + ' with a par') + '</span>' +
+      '<button class="btn sm danger" type="button" data-delward="' + esc(w.id) + '" aria-label="Delete ' + esc(w.name) + '">' + ICON.trash + 'Delete</button></div>' + (w.note ? '<p class="muted small wnote">' + esc(w.note) + '</p>' : '') + '</li>').join('') + '</ol>' +
     '<div class="card"><label class="field"><span>New ward name</span><input type="text" id="newWard" placeholder="e.g. Ward 6 East" maxlength="60"></label><button class="btn primary block" type="button" data-act="addward">Add ward</button></div>';
 };
+let fluidsOnlyCheck = false;
 SETUP.fluids = () => {
-  const fluids = C.fluidsByLocation(S.fluids);
+  const all = C.fluidsByLocation(S.fluids);
+  const nCheck = all.filter(C.needsCartonCheck).length;
+  if (!nCheck) fluidsOnlyCheck = false;
+  const fluids = fluidsOnlyCheck ? all.filter(C.needsCartonCheck) : all;
   const fld = (f, k, label, cls, numeric) => '<label class="field ' + (cls || '') + '"><span>' + label + '</span><input type="text"' + (numeric ? ' inputmode="numeric"' : '') + ' data-fluid="' + esc(f.id) + '" data-k="' + k + '" value="' + esc(f[k]) + '"></label>';
-  return '<p class="sub">Fluids in the store. Units per carton is used for receiving and for ordering in cartons.</p>' +
+  return '<p class="sub">Fluids in the store. Units per carton (pieces in one box) is used for receiving, box counts and ordering.</p>' +
+    (nCheck ? '<div class="card tight row nowrap" role="note"><span class="grow small"><span class="chip warn ck">check carton</span> ' + plural(nCheck, 'fluid') + ' with a blank or unconfirmed carton size. Check the box, fix the number, then tap <b>Confirm</b>.</span>' +
+      '<button class="btn sm" type="button" data-act="fluidscheck" aria-pressed="' + fluidsOnlyCheck + '">' + (fluidsOnlyCheck ? 'Show all' : 'Show only these') + '</button></div>' : '') +
     '<button class="btn primary block" type="button" data-act="addfluid">Add fluid</button>' +
-    fluids.map(f => '<section class="card" aria-label="' + esc(fl(f)) + '"><div class="grid2">' + fld(f, 'name', 'Fluid name', 'full') + fld(f, 'pack', 'Pack size') + fld(f, 'upc', 'Units per carton', '', true) +
-      fld(f, 'loc', 'Store location (bay · shelf)', 'full') + fld(f, 'min', 'Store minimum', '', true) + fld(f, 'stock', 'Store stock now', '', true) + '</div>' +
+    fluids.map(f => '<section class="card" aria-label="' + esc(fl(f)) + '" data-fcard="' + esc(f.id) + '">' + (C.needsCartonCheck(f) ? '<div class="row nowrap ckrow"><span class="grow small"><span class="chip warn ck">check carton</span> ' + esc(f.note || (C.upcKnown(f) ? 'Carton size not confirmed.' : 'Carton size not set.')) + '</span>' +
+        (C.upcKnown(f) ? '<button class="btn sm primary" type="button" data-confirmupc="' + esc(f.id) + '" aria-label="Confirm ' + esc(f.upc) + '/box for ' + esc(fl(f)) + '">Confirm ' + esc(f.upc) + '/box</button>' : '') + '</div>' : (f.note ? '<p class="muted small">' + esc(f.note) + '</p>' : '')) +
+      '<div class="grid2">' + fld(f, 'name', 'Fluid name', 'full') + fld(f, 'pack', 'Volume / pack') + fld(f, 'code', 'Product code') + fld(f, 'upc', 'Units per carton', '', true) +
+      fld(f, 'loc', 'Store location (bay · shelf)') + fld(f, 'min', 'Store minimum', '', true) + fld(f, 'stock', 'Store stock now', '', true) + '</div>' +
       '<div class="row"><button class="btn sm danger right" type="button" data-delfluid="' + esc(f.id) + '" aria-label="Delete ' + esc(fl(f)) + '">' + ICON.trash + 'Delete</button></div></section>').join('');
 };
 SETUP.pars = () => {
   const wards = C.wardsInRoute(S.wards); const fluids = C.fluidsByLocation(S.fluids);
   if (!wards.length || !fluids.length) return '<div class="card empty">Add wards and fluids first.</div>';
-  return '<p class="sub">Par = how many should be on that ward\'s shelf after a top-up. 0 = not stocked there. Scroll sideways inside the grid for more wards.</p>' +
-    '<div class="scrollx" style="max-height:70vh"><table class="pars"><thead><tr><th class="fl" scope="col">Fluid</th>' + wards.map(w => '<th scope="col">' + esc(w.name) + '</th>').join('') + '</tr></thead><tbody>' +
-    fluids.map(f => '<tr><th class="fl" scope="row">' + esc(f.name) + '<br><span class="muted small">' + esc(f.pack) + '</span></th>' + wards.map(w => { const p = C.parOf(S.pars, w.id, f.id); return '<td><input type="text" inputmode="numeric" class="' + (p ? '' : 'zero') + '" data-par="' + esc(w.id) + '|' + esc(f.id) + '" value="' + p + '" aria-label="Par for ' + esc(fl(f)) + ' on ' + esc(w.name) + '"></td>'; }).join('') + '</tr>').join('') +
+  const offN = wards.length - onWards().length;
+  return '<p class="sub">Par = how many ' + (BX() ? '<b>boxes</b>' : '') + ' should be on that ward\'s shelf after a top-up. 0 = not stocked there. Scroll sideways inside the grid for more wards.' + (offN ? ' Wards that are off the round are hidden (' + offN + ').' : '') + '</p>' +
+    '<div class="scrollx" style="max-height:70vh"><table class="pars"><thead><tr><th class="fl" scope="col">Fluid' + (BX() ? ' (boxes)' : '') + '</th>' + onWards().map(w => '<th scope="col">' + esc(w.name) + '</th>').join('') + '</tr></thead><tbody>' +
+    fluids.map(f => '<tr><th class="fl" scope="row">' + esc(f.name) + '<br><span class="muted small">' + esc(f.pack) + (f.code ? ' · ' + esc(f.code) : '') + (inBoxes(f) ? ' · ' + f.upc + '/box' : '') + '</span>' + checkChip(f) + '</th>' + onWards().map(w => { const p = inBoxes(f) ? C.boxesFor(C.parOf(S.pars, w.id, f.id), f) : C.parOf(S.pars, w.id, f.id); return '<td><input type="text" inputmode="numeric" class="' + (p ? '' : 'zero') + '" data-par="' + esc(w.id) + '|' + esc(f.id) + '" value="' + p + '" aria-label="Par for ' + esc(fl(f)) + ' on ' + esc(w.name) + '"></td>'; }).join('') + '</tr>').join('') +
     '</tbody></table></div>';
 };
 view.addEventListener('change', e => {
@@ -744,16 +782,22 @@ view.addEventListener('change', e => {
       if (!/^\d+$/.test(v)) { t.setAttribute('aria-invalid', 'true'); toast('Use a whole number 0 or more.'); return; }
       v = parseInt(v, 10); if (k === 'upc' && v < 1) v = 1;
     }
+    if (k === 'code') v = v.slice(0, 30);
     t.removeAttribute('aria-invalid');
-    f[k] = v; touchSetup(); save(); toast('Saved.');
+    f[k] = v;
+    // typing a carton size counts as checking it
+    if (k === 'upc' && !f.upcOk) { f.upcOk = true; touchSetup(); save(); render({ keepScroll: true }); toast('Saved. Carton size confirmed: ' + v + ' per box.'); return; }
+    touchSetup(); save(); toast('Saved.');
   }
   if (t.dataset.par) {
     const [wid, fid] = t.dataset.par.split('|'); const s = t.value.trim() === '' ? '0' : t.value.trim();
     if (!/^\d+$/.test(s)) { t.setAttribute('aria-invalid', 'true'); toast('Par must be a whole number 0 or more.'); return; }
     t.removeAttribute('aria-invalid');
     const v = parseInt(s, 10); t.value = v; t.classList.toggle('zero', !v);
-    (S.pars[wid] = S.pars[wid] || {})[fid] = v; touchSetup(); save();
+    const f = fluidById(fid);
+    (S.pars[wid] = S.pars[wid] || {})[fid] = inBoxes(f) ? v * C.upcOf(f) : v; touchSetup(); save();
   }
+  if (t.dataset.wardon) { const w = wardById(t.dataset.wardon); w.on = t.checked; touchSetup(); save(); render({ keepScroll: true }); toast(w.name + (w.on ? ' is on the round.' : ' is off the round.')); }
 });
 
 /* ---------- import / export ---------- */
@@ -771,10 +815,18 @@ const README_ROWS = [['Ward Restock by Autoprod: import template'], [''],
   ['2. Fluids sheet: one row per fluid line. Fluid + Pack size together must be unique.'],
   ['   Units per carton is used for receiving and ordering in cartons. Store minimum triggers ordering.'],
   ['3. Pars sheet: one row per fluid, one column per ward (column names must match the Wards sheet). 0 = not stocked.'],
+  ['   If the first column is headed "Fluid (boxes)" the pars are whole boxes; "Fluid" means single units.'],
   ['4. Save, then in the app: Setup > Import / export > Choose file. Check the preview, then Apply.'],
   [''], ['Stock data only: do not add patient information.']];
 SETUP.io = () => {
-  return '<p class="sub">Swap in your own wards, fluids and pars. Download the Excel template (it holds your current data), edit it, then import it. Nothing changes until you press Apply.</p>' +
+  const st = S.setup;
+  return '<section class="card" id="loadSetup"><h3>Load setup</h3>' +
+    (st ? '<p class="small"><span class="chip ok">Loaded</span> <b class="setupname">' + esc(st.name) + '</b><br><span class="muted">' + plural(onWards().length, 'ward') + ' on the round · ' + plural(S.fluids.length, 'fluid') + ' · loaded ' + esc(fmtDate(String(st.loadedAt || '').slice(0, 10) || ymd())) + (st.from === 'link' ? ' from a link' : ' from a file') + '</span></p>'
+      : '<p class="small">' + (S.isSample ? 'Showing the made-up <b>sample data</b>.' : 'Your own wards and fluids (no setup file loaded).') + '</p>') +
+    '<p class="small muted">A setup file (.json) or setup link replaces the wards, fluids and pars. It stays only on this phone: it is never uploaded or sent anywhere.</p>' +
+    '<label class="btn block primary" for="setupFile">Load setup file (.json)…</label><input id="setupFile" class="sr-only" type="file" accept=".json,application/json">' +
+    (S.isSample ? '' : '<div class="btnrow"><button class="btn danger" type="button" data-act="resetsample">Back to sample data</button></div>') + '</section>' +
+    '<p class="sub">Swap in your own wards, fluids and pars. Download the Excel template (it holds your current data), edit it, then import it. Nothing changes until you press Apply.</p>' +
     '<section class="card"><h3>Export</h3><div class="btnrow"><button class="btn primary" type="button" data-act="exportxlsx">' + ICON.dl + 'Excel template (.xlsx)</button></div>' +
     '<div class="btnrow"><button class="btn sm" type="button" data-act="exportcsv" data-table="wards">wards.csv</button><button class="btn sm" type="button" data-act="exportcsv" data-table="fluids">fluids.csv</button><button class="btn sm" type="button" data-act="exportcsv" data-table="pars">pars.csv</button></div></section>' +
     '<section class="card"><h3>Import</h3><p class="small muted">An .xlsx with Wards, Fluids and/or Pars sheets, or one or more of the CSV files above.</p>' +
@@ -890,8 +942,8 @@ AFTER.setup = async (r) => {
   box.innerHTML = pages.length ? pages.map((pg, pi) => '<div class="a4page" aria-label="A4 page ' + (pi + 1) + ' of ' + pages.length + '"><div class="grid" style="grid-template-columns:repeat(' + cols + ',1fr);grid-template-rows:repeat(' + rows + ',1fr)">' +
     pg.map(f => '<div class="qlabel" data-fid="' + esc(f.id) + '" style="' + (cols === 3 ? 'grid-template-columns:1fr;text-align:center;justify-items:center' : '') + '">' +
       '<div style="' + (cols === 3 ? 'width:62%' : '') + '">' + qrSvg(qrPayload(f), 'QR code for ' + fl(f)) + '</div>' +
-      '<div><div class="ln">' + esc(f.name) + '</div><div class="lp">' + esc(f.pack) + '</div>' +
-      (w ? '<div class="lpar">PAR ' + C.parOf(S.pars, w.id, f.id) + '</div><div class="lw">' + esc(w.name) + '</div>' : '') +
+      '<div><div class="ln">' + esc(f.name) + '</div><div class="lp">' + esc(f.pack) + (f.code ? ' · <b>' + esc(f.code) + '</b>' : '') + '</div>' +
+      (w ? '<div class="lpar">PAR ' + (inBoxes(f) ? esc(C.boxText(C.effPar(S, w.id, f), f)) : C.parOf(S.pars, w.id, f.id)) + '</div><div class="lw">' + esc(w.name) + '</div>' : '') +
       '<div class="lloc">Store: ' + esc(f.loc || '-') + '</div><div class="lbrand">Ward Restock by Autoprod</div></div></div>').join('') +
     '</div></div>').join('') : '<div class="empty">No fluids chosen.</div>';
 };
@@ -900,6 +952,7 @@ AFTER.setup = async (r) => {
 SETUP.data = () => {
   const t = S.settings.theme;
   return '<section class="card"><h3>Display</h3><div class="seg" role="group" aria-label="Theme"><button type="button" data-theme-set="light" aria-pressed="' + (t === 'light') + '">Light</button><button type="button" data-theme-set="dark" aria-pressed="' + (t === 'dark') + '">Dark</button><button type="button" data-theme-set="auto" aria-pressed="' + (t === 'auto') + '">Auto</button></div></section>' +
+    '<section class="card"><h3>Work in whole boxes</h3><p class="small muted">On: pars, shelf counts, pick list, delivery and orders are in boxes (cartons), with pieces shown second. Off: single units.</p><div class="seg" role="group" aria-label="Work in whole boxes"><button type="button" data-boxes="1" aria-pressed="' + BX() + '">Boxes</button><button type="button" data-boxes="0" aria-pressed="' + !BX() + '">Single units</button></div></section>' +
     '<section class="card"><h3>Backup</h3><p class="small muted">Everything is stored only in this browser on this device. Download a backup now and then, and to move to a new phone.</p>' +
     '<div class="btnrow"><button class="btn" type="button" data-act="backup">' + ICON.dl + 'Download backup (.json)</button><label class="btn" for="restoreFile">Restore backup…</label></div><input id="restoreFile" class="sr-only" type="file" accept=".json,application/json"></section>' +
     '<section class="card"><h3>Start again</h3><div class="btnrow"><button class="btn danger" type="button" data-act="resetsample">Reset to sample data</button><button class="btn danger" type="button" data-act="clearall">Clear all data</button></div></section>' +
@@ -907,6 +960,46 @@ SETUP.data = () => {
     '<p>Stock data only. Do not enter patient information. Sample data is made up and is not clinical guidance.</p>' +
     '<p>Bundled libraries: <a href="vendor/licenses/sheetjs-LICENSE.txt">SheetJS (Apache-2.0)</a>, <a href="vendor/licenses/jsQR-LICENSE.txt">jsQR (Apache-2.0)</a>, <a href="vendor/licenses/qrcode-generator-LICENSE.txt">QR Code Generator (MIT)</a>.</p></section>';
 };
+
+/* ---------- private setup: file or link (#setup=<compressed base64>) ---------- */
+// The link payload lives after '#', which browsers never send to any server. It is read here,
+// then removed from the address bar straight away.
+function setupError(errors) {
+  modal({ title: 'Could not load this setup', html: '<p>Nothing was changed.</p><ul class="errors">' + errors.slice(0, 12).map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>' + (errors.length > 12 ? '<p class="small">…and ' + (errors.length - 12) + ' more.</p>' : ''), buttons: [{ label: 'OK', value: 'ok', cls: 'primary' }] });
+}
+async function decodeSetupPayload(p) {
+  let b64 = decodeURIComponent(p).replace(/-/g, '+').replace(/_/g, '/').replace(/\s/g, '');
+  while (b64.length % 4) b64 += '=';
+  let bytes;
+  try { bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); } catch (e) { throw new Error('The setup link is damaged or cut short (not valid base64). Try the setup file instead.'); }
+  if (!('DecompressionStream' in window)) throw new Error('This browser cannot open setup links. Update it, or load the setup file instead.');
+  let text;
+  try { text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text(); } catch (e) { throw new Error('The setup link is damaged or cut short (could not unpack it). Try the setup file instead.'); }
+  try { return JSON.parse(text); } catch (e) { throw new Error('The setup link did not contain a valid setup.'); }
+}
+async function openSetupLink() {
+  if (!/^#setup=/.test(location.hash)) return false;
+  const payload = location.hash.slice(7);
+  history.replaceState(null, '', location.pathname + location.search + '#setup/io');   // strip the payload from the URL now
+  render();
+  try { applySetup(await decodeSetupPayload(payload), 'link'); } catch (e) { setupError([e.message]); }
+  return true;
+}
+async function applySetup(obj, from) {
+  const v = C.validateSetup(obj);
+  if (!v.ok) { setupError(v.errors); return; }
+  const on = v.wards.filter(w => w.on).length; const chk = v.fluids.filter(C.needsCartonCheck).length;
+  const hasWork = !S.isSample && (S.history.some(r => !r.sample) || Object.keys(S.today.walks).length || S.today.received.length);
+  const ok = await confirmBox('Load "' + v.name + '"?', v.wards.length + ' wards (' + on + ' on the round, ' + (v.wards.length - on) + ' off) and ' + v.fluids.length + ' fluids' + (chk ? ' (' + chk + ' to check carton size)' : '') + '. ' +
+    'This replaces the wards, fluids, pars, history and today\'s work on this phone' + (hasWork ? ', including your own history (download a backup first if you need it)' : '') + '. It stays on this phone only.', 'Load setup');
+  if (!ok) return;
+  undoable('Loaded ' + v.name + '. Set pars in Setup → Pars.', () => {
+    const keep = S.settings;
+    S = { v: 1, isSample: false, sampleHistory: false, setup: { name: v.name, loadedAt: new Date().toISOString(), from }, wards: v.wards, fluids: v.fluids, pars: v.pars, history: [], today: freshToday(), settings: Object.assign(defaultSettings(), { theme: keep.theme, boxes: true }) };
+    importPreview = null; labelSel = null;
+  });
+  go('#setup/io');
+}
 
 /* ---------- QR scanner (camera only on tap) ---------- */
 async function openScanner(onCode) {
@@ -980,6 +1073,8 @@ document.addEventListener('click', async e => {
   if (ds.rmode) { recvState.mode = ds.rmode; render({ keepScroll: true }); return; }
   if (ds.omode) { S.settings.orderMode = ds.omode; save(); render({ keepScroll: true }); return; }
   if (ds.lper) { S.settings.labelsPerPage = int0(ds.lper); save(); render({ keepScroll: true }); return; }
+  if (ds.boxes !== undefined && t.closest('.seg')) { S.settings.boxes = ds.boxes === '1'; save(); render({ keepScroll: true }); toast(BX() ? 'Working in whole boxes.' : 'Working in single units.'); return; }
+  if (ds.confirmupc) { const f = fluidById(ds.confirmupc); f.upcOk = true; touchSetup(); save(); render({ keepScroll: true }); toast(fl(f) + ': ' + f.upc + ' per box confirmed.'); return; }
   if (ds.themeSet) { S.settings.theme = ds.themeSet; save(); render({ keepScroll: true }); return; }
   if (ds.move) { moveWard(ds.ward, Number(ds.move)); return; }
   if (ds.short) { const [w, f] = ds.short.split('|'); flagShort(w, f); return; }
@@ -1022,7 +1117,7 @@ document.addEventListener('click', async e => {
     case 'skipreceive': S.today.receiveSkipped = true; save(); go('#walk'); break;
     case 'scan': openScanner(onScan); break;
     case 'full': {
-      const wid = parseHash().arg; setCount(wid, ds.fid, C.parOf(S.pars, wid, ds.fid));
+      const wid = parseHash().arg; setCount(wid, ds.fid, C.effPar(S, wid, fluidById(ds.fid)));
       break;
     }
     case 'savewalk': saveWalk(ds.ward); break;
@@ -1056,6 +1151,7 @@ document.addEventListener('click', async e => {
     }
     case 'exportxlsx': try { await exportXlsx(); } catch (err) { toast('Excel export failed: ' + err.message); } break;
     case 'exportcsv': exportCsv(ds.table); toast(ds.table + '.csv downloaded.'); break;
+    case 'fluidscheck': fluidsOnlyCheck = !fluidsOnlyCheck; render({ keepScroll: true }); break;
     case 'cancelimport': importPreview = null; render({ keepScroll: true }); break;
     case 'applyimport': applyImport(); break;
     case 'lblall': labelSel = S.fluids.map(f => f.id); render({ keepScroll: true }); break;
@@ -1070,6 +1166,12 @@ document.addEventListener('click', async e => {
 view.addEventListener('change', async e => {
   const t = e.target;
   if (t.id === 'importFile' && t.files.length) { try { await readImportFiles(Array.from(t.files)); } catch (err) { toast('Could not read that file: ' + err.message); } t.value = ''; }
+  if (t.id === 'setupFile' && t.files.length) {
+    const file = t.files[0]; t.value = '';
+    let obj;
+    try { obj = JSON.parse(await file.text()); } catch (err) { setupError(['That file is not valid JSON, so it cannot be a Ward Restock setup file.']); return; }
+    applySetup(obj, 'file');
+  }
   if (t.id === 'restoreFile' && t.files.length) {
     const file = t.files[0]; t.value = '';
     let data;
@@ -1099,7 +1201,7 @@ if (S.today.date !== ymd()) {
   if (idle) S.today = freshToday();
 }
 save();
-render();
+if (/^#setup=/.test(location.hash)) openSetupLink(); else render();
 window.WR = { get state() { return S; }, get scanEngine() { return scanEngine; }, version: APP_VERSION };
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

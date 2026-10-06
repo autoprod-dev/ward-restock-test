@@ -39,7 +39,9 @@
   function build(todayStr, days) {
     days = days || 14;
     const wards = WARDS.map((name, i) => ({ id: 'w' + (i + 1), name, route: i + 1 }));
-    const fluids = FLUIDS.map((r, i) => ({ id: 'f' + (i + 1), name: r[0], pack: r[1], upc: r[2], loc: r[3], min: r[4], stock: r[5] }));
+    // made-up product codes; one line is flagged 'check carton' so the marker can be seen
+    const fluids = FLUIDS.map((r, i) => ({ id: 'f' + (i + 1), name: r[0], pack: r[1], code: 'DEMO-' + String(i + 1).padStart(3, '0'), upc: r[2], upcOk: i !== 11, unit: 'bag',
+      note: i === 11 ? 'Sample: carton size not confirmed yet' : '', loc: r[3], min: r[4], stock: r[5] }));
     const pars = {};
     wards.forEach((w, wi) => { pars[w.id] = {}; FLUIDS.forEach((r, fi) => { pars[w.id]['f' + (fi + 1)] = r[6][wi]; }); });
     const rand = rng(20261006);

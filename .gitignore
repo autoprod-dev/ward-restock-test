@@ -2,3 +2,8 @@ node_modules/
 test-results/
 playwright-report/
 .DS_Store
+# private, never committed
+data/
+private/
+tutorial/
+tools/build_real_data.py

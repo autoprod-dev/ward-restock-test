@@ -15,5 +15,5 @@
   ],
   "pars": { "wA": { "fA": 10, "fB": 8, "fC": 6 }, "wB": { "fA": 12, "fB": 4, "fC": 0 }, "wC": { "fA": 2, "fB": 0, "fC": 0 } },
   "history": [],
-  "settings": { "orderMode": "units", "theme": "light" }
+  "settings": { "orderMode": "units", "theme": "light", "boxes": false }
 }

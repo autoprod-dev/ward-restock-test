@@ -41,9 +41,32 @@
   function fluidLabel(f) { return f ? (f.name + (f.pack ? ' ' + f.pack : '')) : ''; }
   function fluidKey(name, pack) { return (String(name || '').trim() + '|' + String(pack || '').trim()).toLowerCase().replace(/\s+/g, ' '); }
   function parOf(pars, wardId, fluidId) { return int0(((pars || {})[wardId] || {})[fluidId]); }
-  // The fluids stocked on a ward (par > 0), in store-location order.
+  // The fluids stocked on a ward (par > 0), in store-location order. A ward switched off has none.
   function wardFluids(state, wardId) {
+    const w = (state.wards || []).find(x => x.id === wardId);
+    if (w && w.on === false) return [];
     return fluidsByLocation(state.fluids).filter(f => parOf(state.pars, wardId, f.id) > 0);
+  }
+
+  /* ---------- boxes (cartons) ---------- */
+  // upc 0/blank = carton size not known yet: maths falls back to single pieces.
+  function upcOf(f) { return Math.max(1, int0(f && f.upc)); }
+  function upcKnown(f) { return int0(f && f.upc) > 0; }
+  function needsCartonCheck(f) { return !!f && (!upcKnown(f) || f.upcOk === false); }
+  function unitWord(f, n) { const u = (f && f.unit) || 'bag'; return n === 1 ? u : u + 's'; }
+  function boxesFor(units, f) { return cartonsFor(units, upcOf(f)); }
+  // '2 boxes (24 bags)'; whole boxes, rounded up. Without a known carton size: '24 bags'.
+  function boxText(units, f) {
+    const u = int0(units);
+    if (!upcKnown(f)) return u + ' ' + unitWord(f, u);
+    const b = boxesFor(u, f); const pcs = b * upcOf(f);
+    return b + ' ' + (b === 1 ? 'box' : 'boxes') + ' (' + pcs + ' ' + unitWord(f, pcs) + ')';
+  }
+  // Par used on the walk: in box mode it is rounded up to whole boxes.
+  function effPar(state, wardId, f) {
+    const par = parOf(state.pars, wardId, f.id);
+    if (!(state.settings && state.settings.boxes) || !upcKnown(f)) return par;
+    return boxesFor(par, f) * upcOf(f);
   }
 
   /* ---------- pick list ---------- */
@@ -191,6 +214,7 @@
     const lines = ['Ward Restock order' + (dateLabel ? ' - ' + dateLabel : '')];
     for (const r of rows) {
       const f = fluidsById[r.fluidId];
+      if (mode === 'boxes') { lines.push('- ' + (f.code ? f.code + ' ' : '') + fluidLabel(f) + ': ' + boxText(r.units, f)); continue; }
       const q = mode === 'cartons'
         ? r.cartons + (r.cartons === 1 ? ' carton' : ' cartons') + ' (' + r.cartonUnits + ' units, ' + r.upc + '/carton)'
         : r.units + (r.units === 1 ? ' unit' : ' units');
@@ -289,24 +313,27 @@
   /* ---------- table export / import (wards, fluids, pars) ---------- */
   const H = {
     wards: ['Ward', 'Route order'],
-    fluids: ['Fluid', 'Pack size', 'Units per carton', 'Store location', 'Store minimum', 'Store stock'],
+    fluids: ['Fluid', 'Pack size', 'Units per carton', 'Store location', 'Store minimum', 'Store stock', 'Product code'],
     parsLead: ['Fluid', 'Pack size'],
   };
   function buildTables(state) {
+    const boxes = !!(state.settings && state.settings.boxes);
     const wards = wardsInRoute(state.wards);
     const fluids = fluidsByLocation(state.fluids);
     return {
       wards: [H.wards].concat(wards.map((w, i) => [w.name, i + 1])),
-      fluids: [H.fluids].concat(fluids.map(f => [f.name, f.pack || '', int0(f.upc) || 1, f.loc || '', int0(f.min), Math.round(num(f.stock))])),
-      pars: [H.parsLead.concat(wards.map(w => w.name))].concat(fluids.map(f => [f.name, f.pack || ''].concat(wards.map(w => parOf(state.pars, w.id, f.id))))),
+      fluids: [H.fluids].concat(fluids.map(f => [f.name, f.pack || '', int0(f.upc) || '', f.loc || '', int0(f.min), Math.round(num(f.stock)), f.code || ''])),
+      // in box mode the pars sheet is in whole boxes ('Pars (boxes)')
+      pars: [(boxes ? ['Fluid (boxes)', 'Pack size'] : H.parsLead).concat(wards.map(w => w.name))].concat(fluids.map(f => [f.name, f.pack || ''].concat(wards.map(w => boxes ? boxesFor(parOf(state.pars, w.id, f.id), f) : parOf(state.pars, w.id, f.id))))),
     };
   }
   const norm = s => String(s === null || s === undefined ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
   const ALIASES = {
     ward: ['ward', 'ward name', 'name'], route: ['route order', 'route', 'order', 'route #'],
-    fluid: ['fluid', 'fluid name', 'name', 'item'], pack: ['pack size', 'pack', 'size', 'volume'],
+    fluid: ['fluid', 'fluid (boxes)', 'fluid name', 'name', 'item'], pack: ['pack size', 'pack', 'size', 'volume'],
     upc: ['units per carton', 'per carton', 'carton qty', 'units/carton'], loc: ['store location', 'location', 'bay', 'shelf', 'bay/shelf'],
     min: ['store minimum', 'minimum', 'min', 'store min'], stock: ['store stock', 'stock', 'on hand', 'current store stock'],
+    code: ['product code', 'code', 'item code', 'product no', 'sku'],
   };
   function colIndex(header, key) {
     const h = header.map(norm);
@@ -369,7 +396,7 @@
     }
     if (tables.fluids) {
       const rows = tables.fluids; const hdr = rows[0] || [];
-      const idx = {}; ['fluid', 'pack', 'upc', 'loc', 'min', 'stock'].forEach(k => { idx[k] = colIndex(hdr, k); });
+      const idx = {}; ['fluid', 'pack', 'upc', 'loc', 'min', 'stock', 'code'].forEach(k => { idx[k] = colIndex(hdr, k); });
       const errs = [];
       if (idx.fluid < 0) errs.push('Fluids: no "Fluid" column found.');
       const byKey = new Map(current.fluids.map(f => [fluidKey(f.name, f.pack), f]));
@@ -388,7 +415,9 @@
         if (errs.length > e0) return;
         if (idx.upc < 0 || cell('upc') === '') warnings.push('Fluids row ' + rowNo + ': no units per carton, using 1.');
         const old = byKey.get(key);
-        next.push({ id: old ? old.id : makeId('f', i), name, pack, upc, loc: cell('loc'), min, stock, _new: !old });
+        const code = idx.code >= 0 ? cell('code') : (old && old.code) || '';
+        const upcOk = idx.upc >= 0 && cell('upc') !== '' ? (old && int0(old.upc) === upc ? old.upcOk !== false : true) : !!(old && old.upcOk !== false);
+        next.push({ id: old ? old.id : makeId('f', i), name, pack, upc, loc: cell('loc'), min, stock, code, upcOk, unit: (old && old.unit) || 'bag', note: (old && old.note) || '', _new: !old });
       });
       if (idx.fluid >= 0 && !next.length) errs.push('Fluids: no fluids found.');
       errors.push(...errs.map(e => e.startsWith('Fluids') ? e : 'Fluids ' + e.charAt(0).toLowerCase() + e.slice(1)));
@@ -408,6 +437,7 @@
     if (tables.pars) {
       const rows = tables.pars; const hdr = rows[0] || [];
       const iF = colIndex(hdr, 'fluid'); const iP = colIndex(hdr, 'pack');
+      const inBoxes = iF >= 0 && /box/i.test(String(hdr[iF]));   // 'Fluid (boxes)' = pars in whole boxes
       const errs = [];
       if (iF < 0) errs.push('Pars: no "Fluid" column found.');
       const wardByName = new Map(wards.map(w => [norm(w.name), w]));
@@ -433,7 +463,7 @@
         for (const c of cols) {
           const v = readCount(r[c.i], 'Par for ' + c.w.name, rowNo, errs, { dflt: 0 });
           if (v === null) continue;
-          (next[c.w.id] = next[c.w.id] || {})[f.id] = v; cells++; if (v > 0) set++;
+          (next[c.w.id] = next[c.w.id] || {})[f.id] = inBoxes ? v * upcOf(f) : v; cells++; if (v > 0) set++;
         }
       });
       errors.push(...errs.map(e => e.startsWith('Pars') ? e : 'Pars ' + e.charAt(0).toLowerCase() + e.slice(1)));
@@ -448,7 +478,54 @@
     return { ok: errors.length === 0, errors, warnings, summary, next: { wards, fluids, pars } };
   }
 
+  /* ---------- private setup file / link ---------- */
+  // {format:'ward-restock-setup', version:1, name, wards:[{name,on,note}], fluids:[{name,pack,code,upc,upcOk,unit,note,loc,min,stock}],
+  //  pars?:[{ward, fluid:'code' or 'name|pack', boxes}]}. Returns {ok, errors, warnings, name, wards, fluids, pars}.
+  function validateSetup(obj) {
+    const errors = []; const warnings = [];
+    const str = (v, max) => String(v === null || v === undefined ? '' : v).trim().slice(0, max || 120);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { ok: false, errors: ['This is not a Ward Restock setup (it is not a JSON object).'], warnings };
+    if (obj.format !== 'ward-restock-setup') errors.push('This is not a Ward Restock setup file (the "format" line is missing or wrong).');
+    if (obj.version !== undefined && int0(obj.version) > 1) errors.push('This setup was made for a newer version of the app. Update the app first.');
+    if (!Array.isArray(obj.wards) || !obj.wards.length) errors.push('The setup has no wards.');
+    if (!Array.isArray(obj.fluids) || !obj.fluids.length) errors.push('The setup has no fluids.');
+    if (errors.length) return { ok: false, errors, warnings };
+    if (obj.wards.length > 300) errors.push('Too many wards (' + obj.wards.length + ', max 300).');
+    if (obj.fluids.length > 1000) errors.push('Too many fluids (' + obj.fluids.length + ', max 1000).');
+    const wards = []; const seenW = new Set();
+    obj.wards.forEach((w, i) => {
+      const name = str(w && w.name, 80);
+      if (!name) { errors.push('Ward ' + (i + 1) + ': name is empty.'); return; }
+      if (seenW.has(name.toLowerCase())) { errors.push('Ward ' + (i + 1) + ': "' + name + '" is listed twice.'); return; }
+      seenW.add(name.toLowerCase());
+      wards.push({ id: 'w' + (wards.length + 1), name, route: wards.length + 1, on: !(w.on === false), note: str(w.note, 200) });
+    });
+    const fluids = []; const seenF = new Set();
+    obj.fluids.forEach((f, i) => {
+      const name = str(f && f.name); const pack = str(f && f.pack, 30);
+      const label = (name + ' ' + pack).trim();
+      if (!name) { errors.push('Fluid ' + (i + 1) + ': name is empty.'); return; }
+      const key = fluidKey(name, pack);
+      if (seenF.has(key)) { errors.push('Fluid ' + (i + 1) + ': "' + label + '" is listed twice.'); return; }
+      seenF.add(key);
+      const n = (k, v) => { if (!has(v)) return 0; const x = Number(v); if (!Number.isFinite(x) || x < 0 || Math.round(x) !== x) { errors.push('Fluid ' + (i + 1) + ' (' + label + '): ' + k + ' "' + v + '" must be a whole number 0 or more.'); return 0; } return x; };
+      const upc = n('units per carton', f.upc);
+      fluids.push({ id: 'f' + (fluids.length + 1), name, pack, code: str(f.code, 30), upc, upcOk: upc > 0 && f.upcOk !== false,
+        unit: str(f.unit, 12) || 'bag', note: str(f.note, 200), loc: str(f.loc, 60), min: n('store minimum', f.min), stock: n('store stock', f.stock) });
+    });
+    const pars = {};
+    if (Array.isArray(obj.pars)) obj.pars.forEach((p, i) => {
+      const w = wards.find(x => x.name.toLowerCase() === str(p && p.ward, 80).toLowerCase());
+      const fk = str(p && p.fluid);
+      const f = fluids.find(x => (x.code && x.code === fk) || fluidKey(x.name, x.pack) === fluidKey(fk.split('|')[0], fk.split('|')[1] || ''));
+      if (!w || !f) { warnings.push('Par ' + (i + 1) + ' skipped: ward or fluid not found.'); return; }
+      (pars[w.id] = pars[w.id] || {})[f.id] = int0(p.boxes) * upcOf(f);
+    });
+    return { ok: errors.length === 0, errors, warnings, name: str(obj.name, 60) || 'My setup', wards, fluids, pars };
+  }
+
   return {
+    upcOf, upcKnown, needsCartonCheck, unitWord, boxesFor, boxText, effPar, validateSetup,
     num, int0, naturalCompare, topUp, cartonsFor, receivedUnits, wardsInRoute, fluidsByLocation, fluidLabel, fluidKey,
     parOf, wardFluids, pickList, deliveryPlan, pendingByFluid, shortagesByFluid, dayUsage, historyDates, usageByDay,
     forecastDaily, averagesBy, orderList, orderText, parSuggestions, archiveToday, toCSV, parseCSV, buildTables,

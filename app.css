@@ -286,3 +286,13 @@ dialog .dacts .btn { flex: 1 1 120px; }
   .a4page:last-child { break-after: auto; page-break-after: auto; }
   .qlabel { border: 0.4pt dashed #666; }
 }
+
+/* v1.1: product codes, box counts, check-carton marker, ward on/off */
+.pcode { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; font-weight: 700; background: var(--surface2); color: var(--text); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.chip.ck { font-size: .72rem; padding: 1px 7px; border: 1px solid currentColor; vertical-align: middle; }
+.ckrow { margin-bottom: 8px; gap: 8px; }
+.check.onoff { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: .9rem; }
+.check.onoff input { width: 22px; height: 22px; }
+.wnote { margin: 6px 0 0; }
+.setupname { font-weight: 700; }
+@media print { .pcode { background: none; border: 1px solid #000; } }

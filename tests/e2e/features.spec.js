@@ -18,6 +18,12 @@ function summarize(s) {
     pars,
   };
 }
+// the spreadsheet round trips below are in single units (box mode has its own spec)
+async function unitsMode(page) {
+  await nav(page, '#setup/data');
+  await page.locator('[data-boxes="0"]').click();
+  expect((await state(page)).settings.boxes).toBe(false);
+}
 async function clearAll(page) {
   await nav(page, '#setup/data');
   await page.getByRole('button', { name: 'Clear all data' }).click();
@@ -33,6 +39,7 @@ async function downloadFrom(page, selector, file) {
 
 test('CSV export and import round trip (with preview)', async ({ page }, info) => {
   await fresh(page);
+  await unitsMode(page);
   await expect(page.locator('.banner.sample')).toContainText('SAMPLE DATA');
   await nav(page, '#setup/io');
   const files = [];
@@ -57,6 +64,7 @@ test('CSV export and import round trip (with preview)', async ({ page }, info) =
 
 test('Excel template export, edit and import round trip', async ({ page }, info) => {
   await fresh(page);
+  await unitsMode(page);
   await nav(page, '#setup/io');
   const { file, name } = await downloadFrom(page, '[data-act="exportxlsx"]', info.outputPath('template.xlsx'));
   expect(name).toMatch(/^ward-restock-template-\d{4}-\d{2}-\d{2}\.xlsx$/);
@@ -128,7 +136,7 @@ test('QR shelf labels: pages, print layout and a decodable QR', async ({ page })
   const labels = page.locator('.qlabel');
   await expect(labels).toHaveCount(11);              // 11 fluids stocked on Ward 4 South
   await expect(page.locator('.a4page')).toHaveCount(2); // 8 per page
-  await expect(labels.first()).toContainText('PAR 20');
+  await expect(labels.first()).toContainText('PAR 2 boxes (20 bags)');
   await expect(labels.first()).toContainText('Ward 4 South');
   await expect(labels.first()).toContainText('Store: Bay A · Shelf 1');
   await page.locator('[data-lper="12"]').click();
