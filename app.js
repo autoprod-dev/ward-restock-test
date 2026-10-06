@@ -6,7 +6,7 @@
 (function () {
 const C = window.WRCalc;
 const KEY = 'wardRestock.v1';
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 const $ = (sel, el) => (el || document).querySelector(sel);
 const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 const view = $('#view');
@@ -747,9 +747,9 @@ SETUP.fluids = () => {
   const nCheck = all.filter(C.needsCartonCheck).length;
   if (!nCheck) fluidsOnlyCheck = false;
   const fluids = fluidsOnlyCheck ? all.filter(C.needsCartonCheck) : all;
-  const fld = (f, k, label, cls, numeric) => '<label class="field ' + (cls || '') + '"><span>' + label + '</span><input type="text"' + (numeric ? ' inputmode="numeric"' : '') + ' data-fluid="' + esc(f.id) + '" data-k="' + k + '" value="' + esc(f[k]) + '"></label>';
+  const fld = (f, k, label, cls, numeric) => '<label class="field ' + (cls || '') + '"><span>' + label + '</span><input type="text"' + (numeric ? ' inputmode="numeric"' : '') + ' data-fluid="' + esc(f.id) + '" data-k="' + k + '" value="' + esc(k === 'upc' && !f.upc ? '' : f[k]) + '"' + (k === 'upc' && !f.upc ? ' placeholder="not set"' : '') + '></label>';
   return '<p class="sub">Fluids in the store. Units per carton (pieces in one box) is used for receiving, box counts and ordering.</p>' +
-    (nCheck ? '<div class="card tight row nowrap" role="note"><span class="grow small"><span class="chip warn ck">check carton</span> ' + plural(nCheck, 'fluid') + ' with a blank or unconfirmed carton size. Check the box, fix the number, then tap <b>Confirm</b>.</span>' +
+    (nCheck ? '<div class="card tight row nowrap" role="note"><span class="grow small"><span class="chip warn ck">check carton</span> ' + plural(nCheck, 'fluid') + ' with a blank or unconfirmed carton size. Check a box and type the number (typing it confirms it), or tap <b>Confirm</b> if the number shown is right.</span>' +
       '<button class="btn sm" type="button" data-act="fluidscheck" aria-pressed="' + fluidsOnlyCheck + '">' + (fluidsOnlyCheck ? 'Show all' : 'Show only these') + '</button></div>' : '') +
     '<button class="btn primary block" type="button" data-act="addfluid">Add fluid</button>' +
     fluids.map(f => '<section class="card" aria-label="' + esc(fl(f)) + '" data-fcard="' + esc(f.id) + '">' + (C.needsCartonCheck(f) ? '<div class="row nowrap ckrow"><span class="grow small"><span class="chip warn ck">check carton</span> ' + esc(f.note || (C.upcKnown(f) ? 'Carton size not confirmed.' : 'Carton size not set.')) + '</span>' +
